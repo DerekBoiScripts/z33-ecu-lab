@@ -9,6 +9,7 @@ public final class ResponseParser {
     private ResponseParser() {}
 
     public static boolean unavailable(String raw) {
+        if(raw==null) return true;
         String r = raw.toUpperCase(Locale.US);
         return r.contains("NO DATA") || r.contains("ERROR") || r.contains("UNABLE")
                 || r.contains("STOPPED") || r.contains("?") || r.contains("TIMEOUT") || r.trim().isEmpty();
@@ -16,9 +17,10 @@ public final class ResponseParser {
     /** Parse a simple single-PID RPM response. Device may omit the mode/PID header. */
     public static String rpm(String raw) {
         if (unavailable(raw)) return "Not available";
+        if (!hexResponse(raw)) return "Unrecognized response";
         List<Integer> data = bytes(raw);
         if (data.size() >= 4 && data.get(0) == 0x41 && data.get(1) == 0x0C) data = data.subList(2, data.size());
-        if (data.size() < 2) return "Not available";
+        if (data.size() != 2) return "Unrecognized response";
         int rpm = (data.get(0) * 256 + data.get(1)) / 4;
         if (rpm < 0 || rpm > 12000) return "Unrecognized response";
         return rpm + " RPM";
@@ -32,28 +34,100 @@ public final class ResponseParser {
     }
     /** SAE J1979 Mode 01 support bitmap. PID 20/40 is the continuation bit. */
     public static boolean mode01Advertises(String raw, int rangeStart, int pid) {
-        if (unavailable(raw) || pid < rangeStart + 1 || pid > rangeStart + 32) return false;
+        if (unavailable(raw) || !hexResponse(raw) || pid < rangeStart + 1 || pid > rangeStart + 32) return false;
         List<Integer> b=bytes(raw); int h=findHeader(b,0x41,rangeStart);
         int p=h>=0?h+2:0; if(b.size()-p!=4)return false;
         long map=0; for(int i=0;i<4;i++)map=(map<<8)|b.get(p+i);
         return (map&(1L<<(32-(pid-rangeStart))))!=0;
     }
+    /** Mode 01 PID 01; null means unavailable or structurally invalid. */
+    public static final class MonitorStatus {
+        public final boolean milOn;
+        public final int storedDtcCount;
+        public final String summary;
+        private MonitorStatus(int a) {
+            milOn=(a&0x80)!=0; storedDtcCount=a&0x7F;
+            summary="ECU MIL "+(milOn?"ON":"OFF")+"; stored generic DTC count reported: "+storedDtcCount;
+        }
+    }
+    public static MonitorStatus monitorStatus(String raw) {
+        if (unavailable(raw) || !hexResponse(raw)) return null;
+        List<Integer> b=bytes(raw);
+        if (b.size()==6 && b.get(0)==0x41 && b.get(1)==0x01) return new MonitorStatus(b.get(2));
+        if (b.size()==4) return new MonitorStatus(b.get(0));
+        return null;
+    }
     /** Safe, range-checked decoders for the allowlisted live Mode 01 PIDs. */
     public static String live(String pid, String raw) {
         if (unavailable(raw)) return "Not available";
+        if (!hexResponse(raw)) return "Unrecognized response";
         List<Integer> b=bytes(raw); int wanted=Integer.parseInt(pid.substring(2),16);
         int h=findHeader(b,0x41,wanted); if(h>=0)b=b.subList(h+2,b.size());
         if (pid.equals("0105") || pid.equals("010F")) return one(b,-40,215,"°C",1.0,-40);
         if (pid.equals("0106") || pid.equals("0107")) return one(b,-100,100,"%",100.0/128,-100);
         if (pid.equals("010D")) return one(b,0,255,"km/h",1,0);
         if (pid.equals("010E")) return one(b,-64,63.75,"°",0.5,-64);
-        if (pid.equals("0110")) { if(b.size()<2)return "Unrecognized response"; double v=(b.get(0)*256+b.get(1))/100.0; return v<=655.35?String.format(Locale.US,"%.2f g/s",v):"Unrecognized response"; }
+        if (pid.equals("0110")) { if(b.size()!=2)return "Unrecognized response"; double v=(b.get(0)*256+b.get(1))/100.0; return v<=655.35?String.format(Locale.US,"%.2f g/s",v):"Unrecognized response"; }
         if (pid.equals("0111")) return one(b,0,100,"%",100.0/255,0);
+        if (pid.equals("0104")) return one(b,0,100,"%",100.0/255,0);
+        if (pid.equals("010B")) return one(b,0,255,"kPa",1,0);
+        if (pid.equals("012F")) return one(b,0,100,"%",100.0/255,0);
+        if (pid.equals("0142")) { if(b.size()!=2)return "Unrecognized response"; return String.format(Locale.US,"%.2f V",(b.get(0)*256+b.get(1))/1000.0); }
         return "Unrecognized response";
     }
     private static String one(List<Integer>b,double lo,double hi,String unit,double scale,double offset){
         if(b.size()!=1)return "Unrecognized response"; double v=b.get(0)*scale+offset;
         return v<lo||v>hi?"Unrecognized response":String.format(Locale.US,"%.1f %s",v,unit);
+    }
+    /** Generic emissions only; no conclusion about enhanced/module diagnostics. */
+    public static String dtcs(String raw) {
+        return dtcs("03", raw);
+    }
+    public static String dtcs(String mode, String raw) {
+        if (!BlueProtocol.allowedDtcMode(mode)) throw new IllegalArgumentException("Unsupported DTC category");
+        String category="03".equals(mode)?"stored":"07".equals(mode)?"pending":"permanent";
+        String empty="No "+category+" DTCs reported";
+        String normalized=raw==null?"":raw.replace(">", "").trim();
+        if (normalized.equalsIgnoreCase("NO DATA")) return "ECU/adapter returned NO DATA — no "+category+" generic DTC payload exposed";
+        if (normalized.equalsIgnoreCase("TIMEOUT")) return "DTC request timed out/partial";
+        if (unavailable(raw)) return "DTC request unavailable";
+        StringBuilder out=new StringBuilder();
+        boolean payload=false;
+        for(String line:raw.replace(">", "").split("[\\r\\n]+")) {
+            if(line.trim().isEmpty()) continue;
+            if(!hexResponse(line)) return "Malformed DTC response";
+            List<Integer> b=bytes(line);
+            // Odd length denotes a service header; even length is header-stripped data.
+            // This preserves valid stripped C03xx/C07xx/C10xx and C3Fxx words.
+            if(b.size()==3 && b.get(0)==0x7F && b.get(1)==Integer.parseInt(mode,16)) return "DTC request rejected by ECU";
+            int p=b.size()%2==1 && b.get(0)==(0x40+Integer.parseInt(mode,16))?1:0;
+            if(b.size()-p<2 || (b.size()-p)%2!=0) return "Malformed DTC response";
+            payload=true;
+            for(;p<b.size();p+=2) { int a=b.get(p), c=b.get(p+1); if(a==0&&c==0) continue;
+                char system="PCBU".charAt((a>>6)&3); String code=String.format(Locale.US,"%c%01X%03X",system,(a>>4)&3,((a&15)<<8)|c);
+                if(out.length()>0)out.append(", "); out.append(code);
+            }
+        }
+        if(!payload) return "Malformed DTC response";
+        return out.length()==0?empty:out.toString();
+    }
+    /** Empty for no codes OR unavailable/malformed; use dtcs() for the conservative outcome. */
+    public static List<String> dtcCodes(String mode, String raw) {
+        String summary=dtcs(mode,raw);
+        List<String> result=new ArrayList<>();
+        if(summary.matches("[PCBU][0-3][0-9A-F]{3}(, [PCBU][0-3][0-9A-F]{3})*"))
+            for(String code:summary.split(", ")) if(!result.contains(code)) result.add(code);
+        return java.util.Collections.unmodifiableList(result);
+    }
+    private static boolean hexResponse(String raw) {
+        return raw != null && raw.replace(">", " ").trim().matches("(?i)[0-9a-f]{2}(?:\\s+[0-9a-f]{2})*");
+    }
+    /** Require every continuation bit, not merely a cached downstream bitmap. */
+    public static boolean advertisedLive(String first,String second,String third,int pid) {
+        if(pid<=0x20) return mode01Advertises(first,0,pid);
+        if(!mode01Advertises(first,0,0x20)) return false;
+        if(pid<=0x40) return mode01Advertises(second,0x20,pid);
+        return mode01Advertises(second,0x20,0x40) && mode01Advertises(third,0x40,pid);
     }
     /** Multi-record data cannot be declared complete when its count is unknown. */
     public static boolean needsExhaustiveRetry(int expected, int observed, boolean complete, boolean conflicts) {

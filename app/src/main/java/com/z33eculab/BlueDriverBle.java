@@ -393,14 +393,14 @@ public final class BlueDriverBle {
     public void requestPid(String pid, Reply callback) {
         if (!ready) { listener.onError("Wait until the adapter says READY."); return; }
         if (!BlueProtocol.allowedPid(pid)) { listener.onError("Blocked: unsupported or non-read-only request."); return; }
-        transmit(pid, pid.startsWith("09") ? 9500 : 5000, callback);
+        transmit(pid, pid.startsWith("09") || BlueProtocol.allowedDtcMode(pid) || BlueProtocol.allowedFreezeFrame(pid) ? 9500 : 5000, callback);
     }
     public void requestPidResult(String pid, ResultReply callback) {
         if (!ready) { listener.onError("Wait until the adapter says READY."); return; }
         if (!BlueProtocol.allowedPid(pid)) { listener.onError("Blocked: unsupported or non-read-only request."); return; }
         if (pendingResult != null || pending != null || gatt == null) { listener.onError("Scanner busy or disconnected."); return; }
         pendingResult=callback;
-        transmit(pid, pid.startsWith("09") ? 9500 : 5000, (response, complete) -> { });
+        transmit(pid, pid.startsWith("09") || BlueProtocol.allowedDtcMode(pid) || BlueProtocol.allowedFreezeFrame(pid) ? 9500 : 5000, (response, complete) -> { });
     }
     public CommandResult latestResult() { return latestResult; }
     public void close() {

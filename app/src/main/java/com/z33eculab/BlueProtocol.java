@@ -37,12 +37,23 @@ public final class BlueProtocol {
         return s.toString();
     }
     public static boolean allowedPid(String value) {
-        return value.equals("0100") || value.equals("0120") || value.equals("0140")
+        if (value == null) return false;
+        return value.equals("0100") || value.equals("0101") || value.equals("0120") || value.equals("0140")
                 || value.equals("0105") || value.equals("0106") || value.equals("0107")
-                || value.equals("010C") || value.equals("010D") || value.equals("010E")
-                || value.equals("010F") || value.equals("0110") || value.equals("0111")
+                 || value.equals("010C") || value.equals("010D") || value.equals("010E")
+                 || value.equals("010F") || value.equals("0110") || value.equals("0111")
+                || value.equals("0104") || value.equals("010B") || value.equals("012F") || value.equals("0142")
+                || allowedDtcMode(value) || allowedFreezeFrame(value)
                 || value.equals("0900") || value.equals("0903") || value.equals("0904")
                 || value.equals("0905") || value.equals("0906") || value.equals("0901") || value.equals("0902");
+    }
+    public static boolean allowedFreezeFrame(String value) {
+        return "020000".equals(value) || "020200".equals(value) || "020400".equals(value)
+                || "020500".equals(value) || "020C00".equals(value) || "020D00".equals(value)
+                || "020E00".equals(value) || "020F00".equals(value) || "021000".equals(value) || "021100".equals(value);
+    }
+    public static boolean allowedDtcMode(String value) {
+        return "03".equals(value) || "07".equals(value) || "0A".equals(value);
     }
     /** Transport outcome labels used by UI/export; never include raw data. */
     public static String classifyResponse(String response, boolean complete) {
