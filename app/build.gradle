@@ -1,0 +1,21 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'com.z33eculab'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.z33eculab'
+        minSdk 26
+        targetSdk 35
+        versionCode 11
+        versionName '0.2.0'
+    }
+    buildTypes {
+        release { minifyEnabled false }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
