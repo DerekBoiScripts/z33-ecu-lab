@@ -1,4 +1,5 @@
 # Z33 ECU Lab 0.2.0 — Android BlueDriver diagnostics
+(Yes i used claude to quickly change repo's)
 
 An independent, experimental **read-only** BlueDriver BLE app for the user's 2005 Nissan 350Z 5AT. The app is not a tune editor, ROM dumper, or ECU flasher.
 
